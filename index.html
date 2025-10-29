@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>Block Mind Deluxe - Free Drop</title>
+<style>
+body{margin:0;font-family:sans-serif;background:#f5f8ff;display:flex;justify-content:center;align-items:center;min-height:100vh;}
+#game{display:flex;flex-direction:column;align-items:center;gap:10px;background:#fff;padding:15px;border-radius:15px;box-shadow:0 5px 15px rgba(0,0,0,0.1);width:95vw;max-width:500px;}
+#board{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;width:100%;aspect-ratio:1/1;touch-action:none;}
+.cell{background:#edf2ff;border-radius:6px;border:1px solid #dee3f7;transition:0.15s;}
+.cell.filled{box-shadow:inset 0 -4px rgba(0,0,0,.15);}
+.cell.shadow{background:rgba(100,149,237,0.3)!important;outline:2px dashed rgba(100,149,237,0.5);}
+.piece{display:grid;gap:2px;padding:8px;background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.1);cursor:grab;touch-action:none;}
+.block{width:26px;height:26px;border-radius:5px;}
+.drag{position:fixed;pointer-events:none;z-index:999;transform:translate(-50%,-50%);}
+#preview{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;}
+#score{font-weight:bold;color:#2563eb;}
+#restart{padding:6px 12px;border:none;border-radius:8px;background:#2563eb;color:#fff;font-weight:bold;}
+</style>
+</head>
+<body>
+<div id="game">
+  <div>Skor: <span id="score">0</span></div>
+  <div id="board"></div>
+  <div id="preview"></div>
+  <button id="restart">🔁 Ulangi</button>
+</div>
+
+<!-- 🎵 Suara -->
+<audio id="placeSound" src="https://actions.google.com/sounds/v1/cartoon/pop.ogg"></audio>
+<audio id="clearSound" src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg"></audio>
+<audio id="overSound" src="https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg"></audio>
+
+<script>
+const ROWS=6,COLS=6,COLORS=["#f94144","#f9c74f","#90be6d","#577590"];
+const SHAPES=[
+ [[0,0]],[[0,0],[0,1]],[[0,0],[1,0]],[[0,0],[0,1],[1,0],[1,1]],
+ [[0,0],[0,1],[0,2]],[[0,0],[1,0],[2,0]],[[0,0],[1,0],[1,1]],
+ [[0,0],[1,0],[2,0],[2,1]],[[0,0],[0,1],[0,2],[1,1]]
+];
+let grid=[],score=0,pieces=[],dragging=null,shadowCells=[],offset=[0,0];
+let soundsEnabled=false;
+
+const board=document.getElementById("board");
+const preview=document.getElementById("preview");
+const scoreEl=document.getElementById("score");
+const restartBtn=document.getElementById("restart");
+const placeSound=document.getElementById("placeSound");
+const clearSound=document.getElementById("clearSound");
+const overSound=document.getElementById("overSound");
+
+function enableSoundsOnce(){
+  if(!soundsEnabled){
+    [placeSound,clearSound,overSound].forEach(s=>{
+      s.play().then(()=>s.pause());
+    });
+    soundsEnabled=true;
+  }
+}
+function playSound(sound){
+  if(soundsEnabled){sound.currentTime=0;sound.play();}
+}
+function init(){
+  board.innerHTML="";
+  grid=Array.from({length:ROWS},()=>Array(COLS).fill(null));
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    const div=document.createElement("div");
+    div.className="cell";div.dataset.r=r;div.dataset.c=c;
+    board.appendChild(div);
+  }
+  score=0;pieces=[];refill();render();
+}
+function refill(){
+  while(pieces.length<3){
+    const s=JSON.parse(JSON.stringify(SHAPES[Math.floor(Math.random()*SHAPES.length)]));
+    pieces.push({shape:s,color:COLORS[Math.floor(Math.random()*COLORS.length)]});
+  }
+  renderPreview();
+}
+function render(){
+  document.querySelectorAll(".cell").forEach(el=>{
+    const r=+el.dataset.r,c=+el.dataset.c,col=grid[r][c];
+    el.classList.toggle("filled",!!col);
+    el.style.background=col||"#edf2ff";
+  });
+  scoreEl.textContent=score;
+}
+function renderPreview(){
+  preview.innerHTML="";
+  pieces.forEach((p,i)=>{
+    const piece=document.createElement("div");
+    const rows=Math.max(...p.shape.map(s=>s[0]))+1;
+    const cols=Math.max(...p.shape.map(s=>s[1]))+1;
+    piece.className="piece";
+    piece.style.gridTemplateColumns=`repeat(${cols},1fr)`;
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+      const b=document.createElement("div");
+      b.className="block";
+      if(p.shape.some(s=>s[0]==r&&s[1]==c))b.style.background=p.color;
+      piece.appendChild(b);
+    }
+    piece.addEventListener("pointerdown",e=>{
+      enableSoundsOnce();
+      startDrag(e,p,i,rows,cols);
+    });
+    preview.appendChild(piece);
+  });
+}
+function startDrag(e,piece,index,rows,cols){
+  e.preventDefault();
+  const ghost=document.createElement("div");
+  ghost.className="drag";
+  ghost.innerHTML=preview.children[index].innerHTML;
+  ghost.style.display="grid";
+  ghost.style.gridTemplateColumns=`repeat(${cols},1fr)`;
+  document.body.appendChild(ghost);
+  
+  // Hitung posisi klik relatif terhadap grid blok
+  const rect=e.target.getBoundingClientRect();
+  const xInBlock=e.clientX-rect.left;
+  const yInBlock=e.clientY-rect.top;
+  const blockW=rect.width;
+  const blockH=rect.height;
+  offset=[Math.floor(yInBlock/blockH),Math.floor(xInBlock/blockW)];
+  
+  dragging={piece,index,ghost};
+  moveGhost(e.clientX,e.clientY);
+  const move=ev=>moveGhost(ev.clientX,ev.clientY,true);
+  const up=ev=>{
+    document.removeEventListener("pointermove",move);
+    document.removeEventListener("pointerup",up);
+    drop(ev.clientX,ev.clientY);
+    clearShadow();
+  };
+  document.addEventListener("pointermove",move);
+  document.addEventListener("pointerup",up);
+}
+function moveGhost(x,y,showShadow=false){
+  if(!dragging)return;
+  dragging.ghost.style.left=x+"px";
+  dragging.ghost.style.top=y+"px";
+  if(showShadow){
+    const el=document.elementFromPoint(x,y);
+    let target=el;
+    while(target&&!target.classList.contains("cell")&&target!==document.body)
+      target=target.parentElement;
+    clearShadow();
+    if(target&&target.classList.contains("cell")){
+      const r=+target.dataset.r-offset[0],c=+target.dataset.c-offset[1];
+      showPlacementShadow(r,c);
+    }
+  }
+}
+function clearShadow(){
+  shadowCells.forEach(el=>el.classList.remove("shadow"));
+  shadowCells=[];
+}
+function showPlacementShadow(r,c){
+  const p=dragging.piece;
+  p.shape.forEach(([dr,dc])=>{
+    const rr=r+dr,cc=c+dc;
+    const cell=document.querySelector(`.cell[data-r="${rr}"][data-c="${cc}"]`);
+    if(cell&&!grid[rr]?.[cc]){
+      cell.classList.add("shadow");
+      shadowCells.push(cell);
+    }
+  });
+}
+function drop(x,y){
+  if(!dragging)return;
+  const el=document.elementFromPoint(x,y);
+  let target=el;
+  while(target&&!target.classList.contains("cell")&&target!==document.body)
+    target=target.parentElement;
+  if(target&&target.classList.contains("cell")){
+    const r=+target.dataset.r-offset[0],c=+target.dataset.c-offset[1];
+    tryPlace(r,c);
+  }
+  dragging.ghost.remove();
+  dragging=null;
+}
+function tryPlace(r,c){
+  const p=dragging.piece;
+  if(canPlace(p.shape,r,c)){
+    p.shape.forEach(([dr,dc])=>{
+      grid[r+dr][c+dc]=p.color;
+    });
+    playSound(placeSound);
+    pieces.splice(dragging.index,1);
+    score+=10;
+    clearLines();
+    refill();
+    render();
+    if(!canMove())gameOver();
+  }
+}
+function canPlace(shape,baseR,baseC){
+  for(const [dr,dc] of shape){
+    const r=baseR+dr,c=baseC+dc;
+    if(r<0||c<0||r>=ROWS||c>=COLS)return false;
+    if(grid[r][c])return false;
+  }
+  return true;
+}
+function clearLines(){
+  let fullRows=[],fullCols=[];
+  for(let r=0;r<ROWS;r++)if(grid[r].every(v=>v))fullRows.push(r);
+  for(let c=0;c<COLS;c++)if(grid.every(row=>row[c]))fullCols.push(c);
+  if(fullRows.length||fullCols.length){
+    playSound(clearSound);
+    fullRows.forEach(r=>grid[r].fill(null));
+    fullCols.forEach(c=>grid.forEach(row=>row[c]=null));
+    score+=(fullRows.length+fullCols.length)*20;
+  }
+}
+function canMove(){
+  return pieces.some(p=>{
+    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+      if(canPlace(p.shape,r,c))return true;
+    }
+    return false;
+  });
+}
+function gameOver(){
+  playSound(overSound);
+  alert("🎮 Game Over!\nSkor akhir: "+score);
+}
+restartBtn.onclick=init;
+init();
+</script>
+</body>
+</html>
